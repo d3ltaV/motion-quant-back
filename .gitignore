@@ -1,0 +1,6 @@
+outputs/
+uploads/
+.env
+venv/
+tracking/__pycache__/
+tracking/sparse_claude.py 
