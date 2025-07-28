@@ -2,7 +2,9 @@ import cv2 as cv
 import numpy as np
 from collections import deque
 from tracking.bg_segmentation import generateHistogram
-from tracking.sparse import run_sparse
+from tracking.algos.sparse import run_sparse
+from tracking.algos.dense import run_dense
+from tracking.algos.no_mvt_sparse import run_no_mvt_sparse
 import os
 
 default_params = {
@@ -30,9 +32,26 @@ text_thickness = 2
 text_color = (0, 0, 0)
 bar_color = (0, 0, 255)
 
+def adjust_scale(params):
+    if (params['resolution_width'] != params['scale_resolution_width'] or 
+        params['resolution_height'] != params['scale_resolution_height']):
+
+        diag_scale = (params['scale_resolution_width'] ** 2 + params['scale_resolution_height'] ** 2) ** 0.5
+        diag_input = (params['resolution_width'] ** 2 + params['resolution_height'] ** 2) ** 0.5
+
+        # Scale factor is proportional to change in diagonal
+        scale_factor = diag_scale / diag_input
+        params['active_scale'] *= scale_factor
+
+
 def run_motion_quant(video_path, params, output_dir='outputs'):
     p = {**default_params, **params}
-    
+    # print("Final Parameters for Motion Quantification:")
+    # for k, v in p.items():
+    #     print(f"  {k}: {v}")
+
+    adjust_scale(p)
+    print("Adjusted active_scale:", p["active_scale"])
     cap = cv.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Cannot open video file: {video_path}")
@@ -159,9 +178,18 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
         "lk_params": lk_params,
     }
     try:
-        while cap.isOpened():
-            if not run_sparse(vars, p):
-                break
+        if (params['processing_algo'] == "Sparse with moving camera"):
+            while cap.isOpened():
+                if not run_sparse(vars, p):
+                    break
+        elif (params['processing_algo'] == "Dense with moving camera"):
+            while cap.isOpened():
+                if not run_dense(vars, p):
+                    break
+        elif (params['processing_algo'] == "Sparse without moving camera"):
+            while cap.isOpened():
+                if not run_no_mvt_sparse(vars, p):
+                    break
     finally:
         cap.release()
         out.release()

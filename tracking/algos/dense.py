@@ -3,7 +3,7 @@ import numpy as np
 import time
 from tracking.bg_segmentation import generateHistogram
 
-def run_sparse(vars, p):
+def run_dense(vars, p):
     cap = vars["cap"]
     frame_buffer = vars["frame_buffer"]
     prev_gray = vars["prev_gray"]
@@ -11,7 +11,6 @@ def run_sparse(vars, p):
     foreground_mask = vars["foreground_mask"]
     frame_prev_pts = vars["frame_prev_pts"]
     prev_leaf_pts = vars["prev_leaf_pts"]
-    prev_bg_pts = vars["prev_bg_pts"]
     mask = vars["mask"]
     alpha = vars["alpha"]
     max_motion = vars["max_motion"]
@@ -53,116 +52,98 @@ def run_sparse(vars, p):
         return False
 
     gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+    clahe = cv.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
     frame_buffer.append(gray.copy())
 
     if (currNum > 4) and ((bg_status is None) or (np.count_nonzero(bg_status == 1) <= 10) or (leaf_status is None)
-    or (np.count_nonzero(leaf_status == 1) < 10) or (frame_pts_status is None) or (np.count_nonzero(frame_pts_status) < 100)
-     or (frame_cnt >= 5)): #if there's no bg movement for many frma
+        or (np.count_nonzero(leaf_status == 1) < 10) or (frame_pts_status is None) or (np.count_nonzero(frame_pts_status) < 100)
+        or (frame_cnt >= 5)):
         frame_cnt = 0
         frame_prev_pts = cv.goodFeaturesToTrack(prev_gray, mask=None, **feature_params)
         if frame_prev_pts is None:
             frame_prev_pts = np.array([]).reshape(-1, 1, 2)
-        background_mask, bgNormalized = generateHistogram(list(frame_buffer), c, e, n)
+        background_mask, bgNormalized = generateHistogram(frame_buffer, 8, 190, 40)
         foreground_mask = cv.bitwise_not(background_mask)
-    #if you want to keep tracking the same points -> albeit less accurate
-    # if prev_leaf_pts is None or len(prev_leaf_pts) < 10:       ->in the original code, shi tomasi is rerun every frame, which also works ig
-    #     prev_leaf_pts = cv.goodFeaturesToTrack(prev_gray, mask=None, **feature_params)
-    #     if prev_leaf_pts is None:
-    #         prev_leaf_pts = np.array([]).reshape(-1, 1, 2)
-    prev_leaf_pts = cv.goodFeaturesToTrack(prev_gray, mask=foreground_mask, **feature_params) #shi tomasi every frame, comment out if top -> use foreground_mask = None for 1st week vid
+
+    prev_leaf_pts = cv.goodFeaturesToTrack(prev_gray, mask=foreground_mask, **feature_params)
     if prev_leaf_pts is None:
         prev_leaf_pts = np.array([]).reshape(-1, 1, 2)
+    
+    avg_bg_motion = np.array([0.0, 0.0], dtype=np.float32) #avg. vector of bg points
+    camera_motion_magnitude = 0.0
+    
+    # Dense optical flow for background motion -> find avg_bg_motion and camera_motion_magnitude
+    if prev_gray is not None:
+        flow = cv.calcOpticalFlowFarneback(prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        flow_x = flow[..., 0]
+        flow_y = flow[..., 1]
+        
+        if background_mask is not None:
+            valid_bg_pixels = background_mask > 0
+            bg_flow_x = flow_x[valid_bg_pixels]
+            bg_flow_y = flow_y[valid_bg_pixels]
+            bg_magnitude = np.sqrt(bg_flow_x**2 + bg_flow_y**2)
+            avg_dx = np.mean(bg_flow_x)
+            avg_dy = np.mean(bg_flow_y)
+            if bg_flow_x.size > 0:
+                avg_bg_motion = np.array([np.mean(bg_flow_x), np.mean(bg_flow_y)], dtype=np.float32)
+                camera_motion_magnitude = np.mean(bg_magnitude) * active_scale
 
-    prev_bg_pts = cv.goodFeaturesToTrack(prev_gray, mask=background_mask, **feature_params) #shi tomasi
-    if prev_bg_pts is None:
-        prev_bg_pts = np.array([]).reshape(-1, 1, 2)
-    # Optical flow tracking
-    if prev_leaf_pts.size > 0:
-        leaf_next_pts, leaf_status, _ = cv.calcOpticalFlowPyrLK(prev_gray, gray, prev_leaf_pts, None, **lk_params)
-        if leaf_next_pts is None or leaf_status is None:
-            leaf_next_pts = np.array([]).reshape(-1, 1, 2)
-            leaf_status = np.array([], dtype=np.uint8)
-    else:
+                h, w = prev_gray.shape
+                y_coords, x_coords = np.mgrid[10:h-10:20, 10:w-10:20].reshape(2, -1).astype(int)
+                for y, x in zip(y_coords, x_coords):
+                    if background_mask[y, x] > 0:
+                        dx, dy = flow[y, x]
+                        if abs(dx) > 0.5 or abs(dy) > 0.5:
+                            end_x, end_y = int(x + dx), int(y + dy)
+                            mask = cv.line(mask, (x, y), (end_x, end_y), (0, 140, 255), 1)
+                            frame = cv.circle(frame, (x, y), 2, (255, 255, 0), -1)
+            print(f"[DENSE FLOW] avg dx: {avg_dx:.3f}, dy: {avg_dy:.3f}, mag: {camera_motion_magnitude:.3f}")
+
+    leaf_next_pts, leaf_status, _ = cv.calcOpticalFlowPyrLK(prev_gray, gray, prev_leaf_pts, None, **lk_params)
+    if leaf_next_pts is None or leaf_status is None:
         leaf_next_pts = np.array([]).reshape(-1, 1, 2)
         leaf_status = np.array([], dtype=np.uint8)
 
-    if prev_bg_pts.size > 0:
-        bg_next_pts, bg_status, _ = cv.calcOpticalFlowPyrLK(prev_gray, gray, prev_bg_pts, None, **lk_params)
-        if bg_next_pts is None or bg_status is None:
-            bg_next_pts = np.array([], dtype=np.float32).reshape(-1, 1, 2)
-            bg_status = np.array([], dtype=np.uint8)
-    else:
-        bg_next_pts = np.array([], dtype=np.float32).reshape(-1, 1, 2)
-        bg_status = np.array([], dtype=np.uint8)
-
-    if frame_prev_pts.size > 0:
-        frame_next_pts, frame_pts_status, _ = cv.calcOpticalFlowPyrLK(prev_gray, gray, frame_prev_pts, None, **lk_params)
-        if frame_next_pts is None or frame_pts_status is None:
-            frame_next_pts = np.array([]).reshape(-1, 1, 2)
-            frame_pts_status = np.array([], dtype=np.uint8)
-    else:
+    frame_next_pts, frame_pts_status, _ = cv.calcOpticalFlowPyrLK(prev_gray, gray, frame_prev_pts, None, **lk_params)
+    if frame_next_pts is None or frame_pts_status is None:
         frame_next_pts = np.array([]).reshape(-1, 1, 2)
         frame_pts_status = np.array([], dtype=np.uint8)
-    #estimate bg motion
-    transform = None
-    avg_bg_motion = np.array([0.0, 0.0], dtype=np.float32) #avg. vector of bg points
-    camera_motion_magnitude = 0.0
-    if (bg_next_pts is not None and bg_status is not None and prev_bg_pts is not None and 
-        bg_next_pts.size > 0 and bg_status.size > 0 and prev_bg_pts.size > 0):
-        bg_old = prev_bg_pts[bg_status == 1].astype(np.float32)
-        bg_new = bg_next_pts[bg_status == 1].astype(np.float32)
-        bg_motion_vecs = bg_new.reshape(-1, 2) - bg_old.reshape(-1, 2)
 
-        individual_motions = np.linalg.norm(bg_motion_vecs, axis=1) * active_scale
-        camera_motion_magnitude = np.mean(individual_motions)
-        avg_bg_motion = np.mean(bg_motion_vecs, axis=0) #no flatten
-        if not np.isnan(camera_motion_magnitude):
-            total_cam_motion += camera_motion_magnitude
-            
-        for (new_bg, old_bg) in zip(bg_new.astype(int), bg_old.astype(int)):
-            x1, y1 = new_bg.ravel()
-            x2, y2 = old_bg.ravel()
-            mask = cv.line(mask, (x1, y1), (x2, y2), (0, 140, 255), 1)
-            frame = cv.circle(frame, (x2, y2), 4, (255, 255, 0), -1)
+    if not np.isnan(camera_motion_magnitude):
+        total_cam_motion += camera_motion_magnitude
 
     if frame_next_pts is not None and frame_pts_status is not None and frame_prev_pts is not None:
         f_old = frame_prev_pts[frame_pts_status == 1].astype(int)
         f_new = frame_next_pts[frame_pts_status == 1].astype(int)
         if len(f_old) > 0:
-          displacements = np.linalg.norm(f_new - f_old, axis=1)  # Euclidean distance per point
-          fraction_below_threshold = np.count_nonzero(displacements < low_motion_threshold) / len(displacements)
-
-          if fraction_below_threshold > low_motion_fraction:
-              frame_cnt += 1
-          else:
-              frame_cnt = 0  # Reset if there's movement
-
-        for (new, old) in zip(f_old, f_new):
-          a, b = new.ravel()
-          c, d = old.ravel()
-          # mask = cv.line(mask, (a, b), (c, d), (255,0,196), 1)
-          frame = cv.circle(frame, (a, b), 4, (255,0,225), -1)
+            displacements = np.linalg.norm(f_new - f_old, axis=1)
+            fraction_below_threshold = np.count_nonzero(displacements < low_motion_threshold) / len(displacements)
+            if fraction_below_threshold > low_motion_fraction:
+                frame_cnt += 1
+            else:
+                frame_cnt = 0
+            for (new, old) in zip(f_old, f_new):
+                a, b = new.ravel()
+                c, d = old.ravel()
+                frame = cv.circle(frame, (a, b), 4, (255, 0, 225), -1)
 
     total_motion_frame = 0.0
-    #calculate displacement
     if leaf_next_pts is not None and leaf_status is not None:
         good_old = prev_leaf_pts[leaf_status == 1].astype(np.float32)
         good_new = leaf_next_pts[leaf_status == 1].astype(np.float32)
         for (new, old) in zip(good_new, good_old):
-            leaf_disp = new.reshape(2) - old.reshape(2)  #vec
+            leaf_disp = new.reshape(2) - old.reshape(2)
             corrected_disp = leaf_disp - avg_bg_motion
             motion_real = np.linalg.norm(corrected_disp) * active_scale
             if not np.isnan(motion_real):
-                    total_motion_frame += motion_real
-            # motion_pixels = np.linalg.norm([a - c, b - d])
-            # motion_real = motion_pixels * active_scale
-            # total_motion_frame += motion_real
+                total_motion_frame += motion_real
             a, b = new.astype(int).ravel()
             c, d = old.astype(int).ravel()
             mask = cv.line(mask, (a, b), (c, d), flow_color, 1)
             frame = cv.circle(frame, (a, b), 3, point_color, -1)
 
-    # Update motion smoothing
     motion_window.append(total_motion_frame)
     if len(motion_window) > window_size:
         motion_window.pop(0)
@@ -174,6 +155,7 @@ def run_sparse(vars, p):
     total_motion += smoothed_motion
     if np.isnan(camera_motion_magnitude):
         camera_motion_magnitude = 0
+
     output = cv.add(frame, mask)
 
     text = f"Smoothed motion: {smoothed_motion:.4f}cm"
@@ -202,7 +184,6 @@ def run_sparse(vars, p):
     normalized_motion = min(smoothed_motion / max_motion, 1.0)
     if np.isnan(smoothed_motion):
         smoothed_motion = 0.0
-        normalized_motion = 0.0
     else:
         filled_width = int(bar_width * normalized_motion)
     cv.rectangle(output, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (200, 200, 200), -1)
@@ -222,14 +203,10 @@ def run_sparse(vars, p):
     cv.rectangle(output, (bar1_x, bar1_y), (bar1_x + bar_width, bar1_y + bar_height), (0, 0, 0), 1)
 
     # Update previous frame and points
-    prev_gray = gray.copy()
     if (leaf_next_pts is not None) and (len(leaf_next_pts) > 0):
         prev_leaf_pts = leaf_next_pts.reshape(-1, 1, 2)
     if (frame_next_pts is not None) and (len(frame_next_pts) > 0):
         frame_prev_pts = frame_next_pts.reshape(-1, 1, 2)
-    prev_leaf_pts = leaf_next_pts.reshape(-1, 1, 2)
-    if (bg_next_pts is not None) and (len(bg_next_pts) > 0):
-        prev_bg_pts = bg_next_pts.reshape(-1, 1, 2)
 
     #binmask
     if background_mask is not None:
@@ -239,16 +216,19 @@ def run_sparse(vars, p):
         y_offset = output.shape[0] - 20 - mask_small.shape[0]
         output[y_offset:y_offset + mask_small.shape[0], x_offset:x_offset + mask_small.shape[1]] = mask_small
 
+    out.write(output)
+    
     vars["prev_gray"] = gray.copy()
     vars["frame_prev_pts"] = frame_next_pts.reshape(-1, 1, 2) if frame_next_pts.size > 0 else np.array([]).reshape(-1, 1, 2)
     vars["prev_leaf_pts"] = leaf_next_pts.reshape(-1, 1, 2) if leaf_next_pts.size > 0 else np.array([]).reshape(-1, 1, 2)
-    vars["prev_bg_pts"] = bg_next_pts.reshape(-1, 1, 2) if bg_next_pts.size > 0 else np.array([]).reshape(-1, 1, 2)
-    vars["bg_status"] = bg_status
     vars["leaf_status"] = leaf_status
     vars["frame_pts_status"] = frame_pts_status
     vars["smoothed_motion"] = smoothed_motion
     vars["total_motion"] = total_motion
     vars["total_cam_motion"] = total_cam_motion
     vars["frame_cnt"] = frame_cnt
-    out.write(output)
+    vars["background_mask"] = background_mask
+    vars["foreground_mask"] = foreground_mask
+    vars["mask"] = mask
+
     return True

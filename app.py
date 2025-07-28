@@ -5,9 +5,10 @@ import traceback
 import logging
 from tracking.setup import run_motion_quant
 from werkzeug.utils import secure_filename
+from scale import compute_px_to_cm
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -19,133 +20,95 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
 
 CORS(app)
 
-# Allowed video extensions
 ALLOWED_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v'}
 
 def allowed_file(filename):
-    return '.' in filename and \
-           os.path.splitext(filename.lower())[1] in ALLOWED_EXTENSIONS
+    return '.' in filename and os.path.splitext(filename.lower())[1] in ALLOWED_EXTENSIONS
 
-@app.route("/")
-def hello():
-    return "Flask backend running!"
-
-@app.route('/upload', methods=['POST'])
+@app.route('/motion-analysis', methods=['POST'])
 def upload_video():
     try:
-        logger.info("Received upload request")
-        
-        # Check if video file is present
-        if 'video' not in request.files:
-            logger.error("No video file in request")
-            return jsonify({'error': 'No video file uploaded'}), 400
-        
-        file = request.files['video']
-        if file.filename == '':
-            logger.error("Empty filename")
-            return jsonify({'error': 'No file selected'}), 400
-        
-        if not allowed_file(file.filename):
-            logger.error(f"Invalid file type: {file.filename}")
-            return jsonify({'error': 'Invalid file type. Please upload a video file.'}), 400
-        
-        # Secure the filename and save
+        file = request.files.get('video')
+        if not file or file.filename == '' or not allowed_file(file.filename):
+            return jsonify({'error': 'Invalid or missing video file'}), 400
+
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
-        logger.info(f"Saving file to: {filepath}")
         file.save(filepath)
-        
-        # Verify file was saved successfully
-        if not os.path.exists(filepath):
-            logger.error("File was not saved successfully")
-            return jsonify({'error': 'Failed to save uploaded file'}), 500
-        
-        file_size = os.path.getsize(filepath)
-        logger.info(f"File saved successfully, size: {file_size} bytes")
-        
-        # Parse custom parameters from form data
+
+        logger.info(f"[UPLOAD] File received: {filename} ({os.path.getsize(filepath)} bytes)")
+
+        # Extract form parameters
         params = {}
         for key, value in request.form.items():
-            if key != 'video':  # Skip the file field
+            if key != 'video':
                 try:
-                    # Try to convert to float for numeric parameters
                     params[key] = float(value)
-                    logger.info(f"Parameter {key}: {params[key]}")
                 except ValueError:
                     params[key] = value
-                    logger.info(f"Parameter {key}: {params[key]} (string)")
-        
-        logger.info("Starting motion quantification processing...")
-        
-        # Run motion quantification with enhanced error handling
-        try:
-            output_path = run_motion_quant(filepath, params, app.config['OUTPUT_FOLDER'])
-            logger.info(f"Processing completed, output path: {output_path}")
-        except Exception as processing_error:
-            logger.error(f"Motion quantification failed: {str(processing_error)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            
-            # Clean up uploaded file
-            try:
-                if os.path.exists(filepath):
-                    os.remove(filepath)
-            except:
-                pass
-            
-            return jsonify({
-                'error': f'Video processing failed: {str(processing_error)}'
-            }), 500
-        
-        # Check if the output file exists and has content
-        if not os.path.exists(output_path):
-            logger.error(f"Output file does not exist: {output_path}")
-            return jsonify({'error': 'Output file was not created'}), 500
-        
-        output_size = os.path.getsize(output_path)
-        if output_size == 0:
-            logger.error("Output file is empty")
-            return jsonify({'error': 'Output file is empty'}), 500
-        
-        logger.info(f"Output file created successfully, size: {output_size} bytes")
-        
-        # Get the original filename without extension
-        base_name = os.path.splitext(filename)[0]
-        download_filename = f"{base_name}_motion_analysis.avi"
-        
-        logger.info(f"Sending file for download: {download_filename}")
-        
-        # Return the file with proper filename and MIME type
+
+        logger.info(f"[PROCESS] Starting motion analysis for {filename}")
+        logger.info(f"[PARAMS] {params}")
+        output_path = run_motion_quant(filepath, params, app.config['OUTPUT_FOLDER'])
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            return jsonify({'error': 'Output file not created or empty'}), 500
+
+        download_filename = f"{os.path.splitext(filename)[0]}_motion_analysis.avi"
+        logger.info(f"[SUCCESS] Returning result: {download_filename}")
         return send_file(
-            output_path, 
+            output_path,
             as_attachment=True,
             download_name=download_filename,
             mimetype='video/avi'
         )
-        
+
     except Exception as e:
-        logger.error(f"Unexpected error in upload_video: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return jsonify({
-            'error': f'Unexpected server error: {str(e)}'
-        }), 500
-    
+        logger.error(f"[ERROR] Motion analysis failed: {str(e)}")
+        return jsonify({'error': f'Unexpected server error: {str(e)}'}), 500
     finally:
-        # Clean up uploaded file
-        try:
-            if 'filepath' in locals() and os.path.exists(filepath):
-                os.remove(filepath)
-                logger.info(f"Cleaned up uploaded file: {filepath}")
-        except Exception as cleanup_error:
-            logger.warning(f"Failed to clean up uploaded file: {cleanup_error}")
+        if 'filepath' in locals() and os.path.exists(filepath):
+            os.remove(filepath)
+
+@app.route('/find-scale', methods=['POST'])
+def find_scale():
+    try:
+        file = request.files.get('video')
+        if not file or file.filename == '' or not allowed_file(file.filename):
+            return jsonify({'error': 'Invalid or missing video file'}), 400
+
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+
+        # Extract form parameters
+        params = {}
+        for key in ['frame_rate', 'distance', 'resolution_width', 'resolution_height', 'ruler_length']:
+            if key in request.form:
+                try:
+                    params[key] = float(request.form[key])
+                except ValueError:
+                    return jsonify({'error': f'Invalid value for {key}'}), 400
+
+        logger.info(f"[PROCESS] Finding scale in {filename}")
+        result = compute_px_to_cm(filepath, params)
+
+        return jsonify({'result': result}), 200
+
+    except Exception as e:
+        logger.error(f"[ERROR] Scale computation failed: {str(e)}")
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+    finally:
+        if 'filepath' in locals() and os.path.exists(filepath):
+            os.remove(filepath)
 
 @app.errorhandler(413)
 def too_large(e):
-    return jsonify({'error': 'File too large. Maximum size is 500MB.'}), 413
+    return jsonify({'error': 'File too large. Max 500MB.'}), 413
 
 @app.errorhandler(404)
 def not_found(e):
@@ -153,9 +116,9 @@ def not_found(e):
 
 @app.errorhandler(500)
 def internal_server_error(e):
-    logger.error(f"Internal server error: {str(e)}")
+    logger.error(f"[ERROR 500] {str(e)}")
     return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == "__main__":
-    logger.info("Starting Flask application...")
+    logger.info("Server started on http://0.0.0.0:5000")
     app.run(debug=True, host='0.0.0.0', port=5000)
