@@ -30,14 +30,15 @@ def run_no_mvt_sparse(vars, p):
     leaf_status = vars["leaf_status"]
     active_scale = p.get("active_scale", 0.08152)  # use from params or default
     frame_start = time.time()
-    
+    currNum = int(cap.get(cv.CAP_PROP_POS_FRAMES))
+
     ret, frame = cap.read()
     if not ret:
         return False
 
     gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
     prev = cv.goodFeaturesToTrack(prev_gray, mask=None, **feature_params)
-    next_pts, status, _ = cv.calcOpticalFlowPyrLK(prev_gray, gray, prev, None, **lk_params)
+    next_pts, leaf_status, _ = cv.calcOpticalFlowPyrLK(prev_gray, gray, prev, None, **lk_params)
     if prev is None:
         print("No good features to track.")
         return True
@@ -45,9 +46,9 @@ def run_no_mvt_sparse(vars, p):
     if next_pts is None:
         print("Optical flow failed.")
         return True
-
-    good_old = prev[status == 1].astype(int)
-    good_new = next_pts[status == 1].astype(int)
+    
+    good_old = prev[leaf_status == 1].astype(int)
+    good_new = next_pts[leaf_status == 1].astype(int)
 
     total_motion_frame = 0
     for (new, old) in zip(good_new, good_old):
@@ -102,11 +103,12 @@ def run_no_mvt_sparse(vars, p):
 
     frame_end = time.time()
     frame_time = (frame_end - frame_start) * 1000  # 1000 for ms
-    print(f"Frame time in ms: {frame_time:.2f}ms")
     out.write(output)
     
     leaf_next_pts = good_new if good_new.size > 0 else np.array([]).reshape(-1, 1, 2)
+    leaf_count = int(np.count_nonzero(leaf_status == 1)) if leaf_status is not None else 0
 
+    print(f"Frame {currNum}: Leaf points = {leaf_count}")
     #update variables properly
     vars["prev_gray"] = gray.copy()
     vars["prev_leaf_pts"] = leaf_next_pts.reshape(-1, 1, 2) if leaf_next_pts.size > 0 else np.array([]).reshape(-1, 1, 2)

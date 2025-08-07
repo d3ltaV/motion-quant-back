@@ -65,13 +65,13 @@ def run_sparse(vars, p):
         background_mask, bgNormalized = generateHistogram(list(frame_buffer), c, e, n)
         foreground_mask = cv.bitwise_not(background_mask)
     #if you want to keep tracking the same points -> albeit less accurate
-    # if prev_leaf_pts is None or len(prev_leaf_pts) < 10:       ->in the original code, shi tomasi is rerun every frame, which also works ig
-    #     prev_leaf_pts = cv.goodFeaturesToTrack(prev_gray, mask=None, **feature_params)
-    #     if prev_leaf_pts is None:
-    #         prev_leaf_pts = np.array([]).reshape(-1, 1, 2)
-    prev_leaf_pts = cv.goodFeaturesToTrack(prev_gray, mask=foreground_mask, **feature_params) #shi tomasi every frame, comment out if top -> use foreground_mask = None for 1st week vid
-    if prev_leaf_pts is None:
-        prev_leaf_pts = np.array([]).reshape(-1, 1, 2)
+    if prev_leaf_pts is None or len(prev_leaf_pts) < 1:      
+        prev_leaf_pts = cv.goodFeaturesToTrack(prev_gray, mask=foreground_mask, **feature_params)
+        if prev_leaf_pts is None:
+            prev_leaf_pts = np.array([]).reshape(-1, 1, 2)
+    # prev_leaf_pts = cv.goodFeaturesToTrack(prev_gray, mask=foreground_mask, **feature_params) #shi tomasi every frame, comment out if top -> use foreground_mask = None for 1st week vid
+    # if prev_leaf_pts is None:
+    #     prev_leaf_pts = np.array([]).reshape(-1, 1, 2)
 
     prev_bg_pts = cv.goodFeaturesToTrack(prev_gray, mask=background_mask, **feature_params) #shi tomasi
     if prev_bg_pts is None:
@@ -150,10 +150,11 @@ def run_sparse(vars, p):
         good_new = leaf_next_pts[leaf_status == 1].astype(np.float32)
         for (new, old) in zip(good_new, good_old):
             leaf_disp = new.reshape(2) - old.reshape(2)  #vec
-            corrected_disp = leaf_disp - avg_bg_motion
-            motion_real = np.linalg.norm(corrected_disp) * active_scale
+            # corrected_disp = leaf_disp - avg_bg_motion
+            # motion_real = np.linalg.norm(corrected_disp) * active_scale
+            motion_real = np.linalg.norm(leaf_disp) * active_scale
             if not np.isnan(motion_real):
-                    total_motion_frame += motion_real
+                total_motion_frame += motion_real
             # motion_pixels = np.linalg.norm([a - c, b - d])
             # motion_real = motion_pixels * active_scale
             # total_motion_frame += motion_real
@@ -219,6 +220,12 @@ def run_sparse(vars, p):
     cv.rectangle(output, (bar1_x, bar1_y), (bar1_x + bar_width, bar1_y + bar_height), (200, 200, 200), -1)
     cv.rectangle(output, (bar1_x, bar1_y), (bar1_x + cam_filled_width, bar1_y + bar_height), bar_color, -1)
     cv.rectangle(output, (bar1_x, bar1_y), (bar1_x + bar_width, bar1_y + bar_height), (0, 0, 0), 1)
+    # Count the number of successfully tracked points for each type
+    leaf_count = int(np.count_nonzero(leaf_status == 1)) if leaf_status is not None else 0
+    bg_count = int(np.count_nonzero(bg_status == 1)) if bg_status is not None else 0
+    frame_count = int(np.count_nonzero(frame_pts_status == 1)) if frame_pts_status is not None else 0
+
+    print(f"Frame {currNum}: Leaf points = {leaf_count}, Background points = {bg_count}, Frame/global points = {frame_count}")
 
     # Update previous frame and points
     if (leaf_next_pts is not None) and (len(leaf_next_pts) > 0):

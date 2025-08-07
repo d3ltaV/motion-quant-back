@@ -2,7 +2,7 @@ import cv2 as cv
 import numpy as np
 from collections import deque
 from tracking.bg_segmentation import generateHistogram
-from tracking.algos.sparse import run_sparse
+from tracking.algos.sparse_new import run_sparse
 from tracking.algos.dense import run_dense
 from tracking.algos.no_mvt_sparse import run_no_mvt_sparse
 import os
@@ -12,11 +12,12 @@ default_params = {
     "brightness_thresh": 0.15,
     "event_thresh": 0.5,
     "neighborhood": 50,
-    "bgSeg": "Sparse"
+    "bgSeg": "Sparse",
+    "adjust_for_resolution": False
 }
 
 #Parameters for Shi-Tomasi corner detection
-feature_params = dict(maxCorners=150, qualityLevel=0.2, minDistance=2, blockSize=7)
+feature_params = dict(maxCorners=6, qualityLevel=0.15, minDistance=1, blockSize=7)
 
 #Parameters for Lucas-Kanade optical flow
 lk_params = dict(winSize=(15, 15), maxLevel=2,
@@ -29,7 +30,7 @@ bg_point_color = (255, 200, 100)
 font = cv.FONT_HERSHEY_SIMPLEX
 font_scale = 0.6
 text_thickness = 2
-text_color = (0, 0, 0)
+text_color = (255, 255, 255)
 bar_color = (0, 0, 255)
 
 def adjust_scale(params):
@@ -49,9 +50,13 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
     # print("Final Parameters for Motion Quantification:")
     # for k, v in p.items():
     #     print(f"  {k}: {v}")
-
-    adjust_scale(p)
+    if isinstance(p["adjust_for_resolution"], str):
+        val = p["adjust_for_resolution"].strip().lower() == "true"
+    p["adjust_for_resolution"] = val
+    if p["adjust_for_resolution"] == True:
+        adjust_scale(p)
     print("Adjusted active_scale:", p["active_scale"])
+    
     cap = cv.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Cannot open video file: {video_path}")
