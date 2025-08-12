@@ -2,10 +2,12 @@ import cv2 as cv
 import numpy as np
 import time
 
-def run_no_mvt_sparse(vars, p): 
+def run_bounding_sparse(vars, p): 
     cap = vars["cap"]
     prev_gray = vars["prev_gray"]
-    prev_leaf_pts = vars["prev_leaf_pts"]
+    prev = vars["prev_leaf_pts"]
+    box_foreground_mask = vars["box_foreground_mask"]
+    box_background_mask = vars["box_background_mask"]
     mask = vars["mask"]
     alpha = vars["alpha"]
     max_motion = vars["max_motion"]
@@ -36,7 +38,7 @@ def run_no_mvt_sparse(vars, p):
         return False
 
     gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
-    prev = cv.goodFeaturesToTrack(prev_gray, mask=None, **feature_params)
+    prev = cv.goodFeaturesToTrack(prev_gray, mask=box_foreground_mask, **feature_params)
     next_pts, leaf_status, _ = cv.calcOpticalFlowPyrLK(prev_gray, gray, prev, None, **lk_params)
     if prev is None:
         print("No good features to track.")
@@ -102,12 +104,22 @@ def run_no_mvt_sparse(vars, p):
 
     frame_end = time.time()
     frame_time = (frame_end - frame_start) * 1000  # 1000 for ms
+    
+    #draw binmask
+    if box_foreground_mask is not None:
+        mask_color = cv.cvtColor(box_foreground_mask, cv.COLOR_GRAY2BGR)
+        mask_small = cv.resize(mask_color, (160, 120))
+        x_offset = 20
+        y_offset = output.shape[0] - 20 - mask_small.shape[0]
+        output[y_offset:y_offset + mask_small.shape[0], x_offset:x_offset + mask_small.shape[1]] = mask_small
+        
     out.write(output)
     
     leaf_next_pts = good_new if good_new.size > 0 else np.array([]).reshape(-1, 1, 2)
     leaf_count = int(np.count_nonzero(leaf_status == 1)) if leaf_status is not None else 0
 
     print(f"Frame {currNum}: Leaf points = {leaf_count}")
+
     #update variables properly
     vars["prev_gray"] = gray.copy()
     vars["prev_leaf_pts"] = leaf_next_pts.reshape(-1, 1, 2) if leaf_next_pts.size > 0 else np.array([]).reshape(-1, 1, 2)

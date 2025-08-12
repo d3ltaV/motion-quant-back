@@ -2,9 +2,11 @@ import cv2 as cv
 import numpy as np
 from collections import deque
 from tracking.bg_segmentation import generateHistogram
-from tracking.algos.sparse_new import run_sparse
+from tracking.mask_box import genBox
+from tracking.algos.sparse import run_sparse
 from tracking.algos.dense import run_dense
 from tracking.algos.no_mvt_sparse import run_no_mvt_sparse
+from tracking.algos.bounding_sparse import run_bounding_sparse
 import os
 
 default_params = {
@@ -17,7 +19,7 @@ default_params = {
 }
 
 #Parameters for Shi-Tomasi corner detection
-feature_params = dict(maxCorners=6, qualityLevel=0.15, minDistance=1, blockSize=7)
+feature_params = dict(maxCorners=140, qualityLevel=0.15, minDistance=1, blockSize=7)
 
 #Parameters for Lucas-Kanade optical flow
 lk_params = dict(winSize=(15, 15), maxLevel=2,
@@ -88,9 +90,20 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
         p["event_thresh"],
         p["neighborhood"]
     ) #buffer, brightness change thresh, normalized event count thresh, erode
-    
+
     foreground_mask = cv.bitwise_not(background_mask)
     
+    x1 = 240
+    y1 = 1
+    x2 = 1
+    y2 = 1
+    x3 = 1100
+    y3 = 600
+    x4 = 1
+    y4 = 1
+    box_foreground_mask = genBox(x1, y1, x2, y2, x3, y3, x4, y4, list(frame_buffer))
+    box_background_mask = cv.bitwise_not(box_foreground_mask)
+
     frame_prev_pts = cv.goodFeaturesToTrack(prev_gray, mask=None, **feature_params) #initial shi tomasi to help camera tracking (not recomputed every frame)
     prev_leaf_pts = cv.goodFeaturesToTrack(prev_gray, mask=foreground_mask, **feature_params) #initial shi tomasi for leaves
     prev_bg_pts = cv.goodFeaturesToTrack(prev_gray, mask=background_mask, **feature_params) #initial shi tomasi for bg
@@ -126,10 +139,12 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
     total_motion = 0
     total_cam_motion = 0
 
-    low_motion_threshold = 0.8
+    low_motion_threshold = 3 #if less than 3 pixel of mvt per frame
     low_motion_fraction = 0.5
-    frame_cnt = 0 #frames where many frame tracking points don't move
-
+    high_motion_threshold = 1
+    high_motion_fraction = 0.5
+    bg_frame_cnt = 0 #frames where many frame tracking points don't move
+    f_frame_cnt = 0
     # Reserve space for longest expected text
     reserved_text = "Smoothed motion: 200.00cm"
     reserved_text_size, _ = cv.getTextSize(reserved_text, font, font_scale, text_thickness)
@@ -144,7 +159,9 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
         "frame_buffer": frame_buffer,
         "background_mask": background_mask,
         "foreground_mask": foreground_mask,
-
+        "box_foreground_mask": box_foreground_mask,
+        "box_background_mask": box_background_mask,
+        
         "frame_prev_pts": frame_prev_pts,
         "frame_next_pts": frame_next_pts,
         "frame_pts_status": frame_pts_status,
@@ -165,7 +182,10 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
         "total_cam_motion": total_cam_motion,
         "low_motion_threshold": low_motion_threshold,
         "low_motion_fraction": low_motion_fraction,
-        "frame_cnt": frame_cnt,
+        "high_motion_threshold": high_motion_threshold,
+        "high_motion_fraction": high_motion_fraction,
+        "bg_frame_cnt": bg_frame_cnt,
+        "f_frame_cnt": f_frame_cnt,
         "font": font,
         "font_scale": font_scale,
         "text_thickness": text_thickness,
@@ -186,6 +206,7 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
         if (params['processing_algo'] == "Sparse with moving camera"):
             while cap.isOpened():
                 if not run_sparse(vars, p):
+                # if not run_bounding_sparse(vars, p):
                     break
         elif (params['processing_algo'] == "Dense with moving camera"):
             while cap.isOpened():
@@ -195,6 +216,11 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
             while cap.isOpened():
                 if not run_no_mvt_sparse(vars, p):
                     break
+        elif (params['processing_algo'] == "Bounding"):
+            while cap.isOpened():
+                if not run_bounding_sparse(vars, p):
+                    break
+
     finally:
         cap.release()
         out.release()
