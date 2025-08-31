@@ -93,14 +93,11 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
 
     foreground_mask = cv.bitwise_not(background_mask)
     
-    x1 = 240
-    y1 = 1
-    x2 = 1
-    y2 = 1
-    x3 = 1100
-    y3 = 600
-    x4 = 1
-    y4 = 1
+    x1, y1 = int(p['tlx']), int(p['tly'])
+    x2, y2 = int(p['trx']), int(p['try'])
+    x3, y3 = int(p['blx']), int(p['bly'])
+    x4, y4 = int(p['brx']), int(p['bry'])
+
     box_foreground_mask = genBox(x1, y1, x2, y2, x3, y3, x4, y4, list(frame_buffer))
     box_background_mask = cv.bitwise_not(box_foreground_mask)
 
@@ -206,7 +203,6 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
         if (params['processing_algo'] == "Sparse with moving camera"):
             while cap.isOpened():
                 if not run_sparse(vars, p):
-                # if not run_bounding_sparse(vars, p):
                     break
         elif (params['processing_algo'] == "Dense with moving camera"):
             while cap.isOpened():
@@ -216,7 +212,7 @@ def run_motion_quant(video_path, params, output_dir='outputs'):
             while cap.isOpened():
                 if not run_no_mvt_sparse(vars, p):
                     break
-        elif (params['processing_algo'] == "Bounding"):
+        elif (params['processing_algo'] == "Sparse with bounding box"):
             while cap.isOpened():
                 if not run_bounding_sparse(vars, p):
                     break
